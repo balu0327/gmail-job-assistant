@@ -17,6 +17,12 @@ TRACKER_DB = _path("TRACKER_DB", "tracker.db")
 CREDENTIALS = _path("GOOGLE_CREDENTIALS", "credentials.json")
 TOKEN = _path("GOOGLE_TOKEN", "token.json")
 PROFILE = _path("PROFILE", "profile.json")
+RUN_LOG = _path("RUN_LOG", "logs/runs.jsonl")
+
+
+def langfuse_send_content() -> bool:
+    """Email text goes to Langfuse only when explicitly switched on."""
+    return os.getenv("LANGFUSE_SEND_CONTENT", "false").strip().lower() == "true"
 
 
 def _json_env(name: str, default: str) -> dict:

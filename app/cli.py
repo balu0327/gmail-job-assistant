@@ -5,16 +5,19 @@
     python -m app.cli report               applications and mail that needs you
     python -m app.cli draft EMAIL_ID       write a reply and save it as a Gmail draft (never sends)
     python -m app.cli done EMAIL_ID        mark an action item as handled
+    python -m app.cli stats                model calls, latency, failures per run
 """
 import argparse
 import sys
 import time
+from contextlib import contextmanager
 
 from app import config
 from app.classify import classify
 from app.drafts import draft_reply, placeholders
 from app.gateway import Gateway, ModelError
 from app.gmail_client import GmailClient
+from app.monitor import Monitor, make_tracer, summarize
 from app.tracker import Tracker
 
 LABELS = {
@@ -27,24 +30,46 @@ def gmail() -> GmailClient:
     return GmailClient.connect(config.CREDENTIALS, config.TOKEN)
 
 
+@contextmanager
+def monitored(command: str):
+    """A Monitor for one run, plus a Gateway that reports every model call to it."""
+    tracer, provider = make_tracer()
+    monitor = Monitor(config.RUN_LOG, command, tracer, config.langfuse_send_content())
+    try:
+        yield monitor, Gateway(config.providers(), on_call=monitor.on_call)
+    finally:
+        monitor.finish()
+        if provider:
+            provider.force_flush()
+            provider.shutdown()
+
+
 def cmd_auth(args):
     print(f"Signed in as {gmail().my_address()}")
 
 
 def cmd_sync(args):
-    gm, tracker, gw = gmail(), Tracker(str(config.TRACKER_DB)), Gateway(config.providers())
+    with monitored("sync") as (monitor, gw):
+        _sync(args, monitor, gw)
+
+
+def _sync(args, monitor: Monitor, gw: Gateway):
+    gm, tracker = gmail(), Tracker(str(config.TRACKER_DB))
     query = f"newer_than:{args.days}d -in:sent -in:chats -in:drafts"
     ids = [i for i in gm.list_ids(query, args.max) if not tracker.seen(i)]
     print(f"{len(ids)} new emails to sort")
     failed = 0
     for n, msg_id in enumerate(ids, 1):
         email = gm.get(msg_id)
+        monitor.begin_email(email, "classify")
         try:
             result = classify(gw, email)
         except ModelError as e:
             failed += 1  # not recorded, so the next sync tries it again
+            monitor.end_email(error=str(e))
             print(f"[{n}/{len(ids)}] FAILED {email.subject[:60]}  ({e})")
             continue
+        monitor.end_email(result)
         tracker.record(email, result)
         flag = " *ACTION*" if result["action_needed"] else ""
         print(f"[{n}/{len(ids)}] {LABELS[result['category']]:<9}{flag} {email.subject[:70]}")
@@ -78,9 +103,16 @@ def cmd_report(args, tracker: Tracker | None = None):
 
 
 def cmd_draft(args):
-    gm, gw = gmail(), Gateway(config.providers())
+    gm = gmail()
     email = gm.get(args.email_id)
-    reply = draft_reply(gw, email, config.load_profile(), args.note)
+    with monitored("draft") as (monitor, gw):
+        monitor.begin_email(email, "draft")
+        try:
+            reply = draft_reply(gw, email, config.load_profile(), args.note)
+        except ModelError as e:
+            monitor.end_email(error=str(e))
+            raise
+        monitor.end_email({"source": "model", "category": "draft"})
     print(f"Reply to: {email.sender} <{email.sender_email}>\nSubject:  Re: {email.subject}\n")
     print(reply)
     gaps = placeholders(reply)
@@ -91,6 +123,32 @@ def cmd_draft(args):
         return
     draft_id = gm.create_draft(email, reply)
     print(f"Saved as draft {draft_id}. It is in Gmail > Drafts; nothing was sent.")
+
+
+def cmd_stats(args):
+    s = summarize(config.RUN_LOG, args.last)
+    o = s["overall"]
+    if not o["runs"]:
+        print("No runs logged yet. Run sync first.")
+        return
+    print(f"LAST {len(s['runs'])} RUNS")
+    print(f"  {'started (UTC)':<20}{'command':<9}{'emails':>7}{'rule':>6}{'model':>7}{'failed':>8}"
+          f"{'avg s':>7}{'p95 s':>7}{'tokens':>8}  providers")
+    for r in s["runs"]:
+        lat = r["latencies"]
+        avg = f"{sum(lat) / len(lat):.1f}" if lat else "-"
+        p95 = f"{sorted(lat)[min(len(lat) - 1, int(round(0.95 * (len(lat) - 1))))]:.1f}" if lat else "-"
+        providers = ", ".join(f"{k} {v}" for k, v in r["providers"].items()) or "-"
+        print(f"  {r['started'][:19].replace('T', ' '):<20}{r['command']:<9}{r['emails']:>7}{r['rule']:>6}"
+              f"{r['model']:>7}{r['failed']:>8}{avg:>7}{p95:>7}{r['tokens']:>8}  {providers}")
+    print("\nALL RUNS")
+    print(f"  emails {o['emails']}  (rule {o['rule']}, model {o['model']}, failed {o['failed']})")
+    print(f"  model calls {o['model_calls']}, errors {o['call_errors']}"
+          f"  ({', '.join(f'{k} {v}' for k, v in o['providers'].items()) or 'none'})")
+    if o["avg_latency_s"] is not None:
+        print(f"  latency avg {o['avg_latency_s']} s, p95 {o['p95_latency_s']} s")
+    print(f"  tokens {o['tokens']}")
+    print(f"\nLog file: {config.RUN_LOG}")
 
 
 def cmd_done(args):
@@ -117,6 +175,9 @@ def main(argv=None):
     x = sub.add_parser("done", help="mark an action item as handled")
     x.add_argument("email_id")
     x.set_defaults(fn=cmd_done)
+    st = sub.add_parser("stats", help="model calls, latency and failures per run")
+    st.add_argument("--last", type=int, default=10, help="how many recent runs to list")
+    st.set_defaults(fn=cmd_stats)
     args = ap.parse_args(argv)
     try:
         args.fn(args)

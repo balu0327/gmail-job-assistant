@@ -5,6 +5,8 @@ tried in order, so a rate-limited hosted endpoint falls through to the local one
 """
 import json
 import re
+import time
+from typing import Callable
 
 import httpx
 
@@ -26,11 +28,25 @@ def extract_json(text: str) -> dict:
 
 
 class Gateway:
-    def __init__(self, providers: list[dict], client: httpx.Client | None = None):
+    def __init__(self, providers: list[dict], client: httpx.Client | None = None,
+                 on_call: Callable[[dict], None] | None = None):
         self.providers = providers
         # Free endpoints can queue a request for minutes; fail fast and fall through instead.
         self.http = client or httpx.Client(timeout=httpx.Timeout(60, connect=10))
         self.last_model = None
+        # Called once per provider attempt with timing, tokens and outcome (see app/monitor.py).
+        self.on_call = on_call
+
+    def _report(self, p: dict, start_ns: int, ok: bool, system: str, user: str,
+                output: str | None = None, error: str | None = None, usage: dict | None = None):
+        if not self.on_call:
+            return
+        usage = usage or {}
+        self.on_call({
+            "provider": p["name"], "model": p["model"], "start_ns": start_ns, "end_ns": time.time_ns(),
+            "ok": ok, "error": error, "system": system, "input": user, "output": output,
+            "input_tokens": usage.get("prompt_tokens"), "output_tokens": usage.get("completion_tokens"),
+        })
 
     # Reasoning models (gpt-oss) spend tokens thinking before the answer, so limits are generous.
     def chat(self, system: str, user: str, temperature: float = 0.2, max_tokens: int = 4096) -> str:
@@ -38,6 +54,7 @@ class Gateway:
             raise ModelError("No model provider configured. Set NVIDIA_API_KEY or OLLAMA_MODEL in .env.")
         errors = []
         for p in self.providers:
+            start_ns = time.time_ns()
             try:
                 r = self.http.post(
                     p["base_url"].rstrip("/") + "/chat/completions",
@@ -54,13 +71,16 @@ class Gateway:
                     },
                 )
                 r.raise_for_status()
-                content = r.json()["choices"][0]["message"].get("content")
+                data = r.json()
+                content = data["choices"][0]["message"].get("content")
                 if not content or not content.strip():
                     raise ValueError("empty reply")
                 self.last_model = f"{p['name']}:{p['model']}"
+                self._report(p, start_ns, True, system, user, output=content.strip(), usage=data.get("usage"))
                 return content.strip()
             except (httpx.HTTPError, KeyError, IndexError, ValueError) as e:
                 errors.append(f"{p['name']}: {type(e).__name__}: {e}")
+                self._report(p, start_ns, False, system, user, error=f"{type(e).__name__}: {e}"[:300])
         raise ModelError("All providers failed. " + " | ".join(errors))
 
     def chat_json(self, system: str, user: str, retries: int = 1) -> dict:

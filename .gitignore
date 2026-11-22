@@ -6,3 +6,4 @@ credentials.json
 token.json
 profile.json
 tracker.db
+logs/
