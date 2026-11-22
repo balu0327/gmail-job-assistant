@@ -1,0 +1,8 @@
+{
+  "name": "Your Name",
+  "email": "you@example.com",
+  "location": "Bangalore",
+  "education": "B.E. Computer Science and Engineering, 2026",
+  "links": ["github.com/yourname", "linkedin.com/in/yourname"],
+  "notes": "Facts replies may use. Leave out anything you don't want shared, such as salary."
+}
