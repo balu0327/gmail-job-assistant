@@ -49,6 +49,7 @@ def build_status(tracker: Tracker, error: str | None = None) -> dict:
             {
                 "title": "Needs your action",
                 "type": "list",
+                "focus": True,  # dashboards show these items first
                 "empty": "Nothing needs you right now.",
                 "items": [{
                     "title": p["summary"] or p["subject"],
