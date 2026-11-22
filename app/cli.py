@@ -16,8 +16,9 @@ from app import config
 from app.classify import classify
 from app.drafts import draft_reply, placeholders
 from app.gateway import Gateway, ModelError
-from app.gmail_client import GmailClient
+from app.gmail_client import GmailClient, SignInRequired
 from app.monitor import Monitor, make_tracer, summarize
+from app.status import write_status
 from app.tracker import Tracker
 
 LABELS = {
@@ -26,8 +27,8 @@ LABELS = {
 }
 
 
-def gmail() -> GmailClient:
-    return GmailClient.connect(config.CREDENTIALS, config.TOKEN)
+def gmail(interactive: bool = True) -> GmailClient:
+    return GmailClient.connect(config.CREDENTIALS, config.TOKEN, interactive)
 
 
 @contextmanager
@@ -50,13 +51,21 @@ def cmd_auth(args):
 
 def cmd_sync(args):
     with monitored("sync") as (monitor, gw):
-        _sync(args, monitor, gw)
+        try:
+            _sync(args, monitor, gw)
+        except Exception as e:
+            monitor.error = f"{type(e).__name__}: {e}"[:500]
+            raise
+        finally:
+            # Refresh the dashboard snapshot whether the run worked or not.
+            write_status(config.STATUS_FILE, Tracker(str(config.TRACKER_DB)), monitor.error)
 
 
 def _sync(args, monitor: Monitor, gw: Gateway):
-    gm, tracker = gmail(), Tracker(str(config.TRACKER_DB))
+    gm, tracker = gmail(interactive=not args.scheduled), Tracker(str(config.TRACKER_DB))
     query = f"newer_than:{args.days}d -in:sent -in:chats -in:drafts"
     ids = [i for i in gm.list_ids(query, args.max) if not tracker.seen(i)]
+    monitor.set_total(len(ids))
     print(f"{len(ids)} new emails to sort")
     failed = 0
     for n, msg_id in enumerate(ids, 1):
@@ -152,8 +161,11 @@ def cmd_stats(args):
 
 
 def cmd_done(args):
-    ok = Tracker(str(config.TRACKER_DB)).mark_handled(args.email_id)
+    tracker = Tracker(str(config.TRACKER_DB))
+    ok = tracker.mark_handled(args.email_id)
     print("Marked as handled." if ok else "No email with that id in the tracker.")
+    if ok:
+        write_status(config.STATUS_FILE, tracker)
 
 
 def main(argv=None):
@@ -165,6 +177,8 @@ def main(argv=None):
     s.add_argument("--days", type=int, default=14)
     s.add_argument("--max", type=int, default=100)
     s.add_argument("--delay", type=float, default=1.0, help="seconds between model calls")
+    s.add_argument("--scheduled", action="store_true",
+                   help="unattended run: never open a browser; fail with a message if sign-in expired")
     s.set_defaults(fn=cmd_sync)
     sub.add_parser("report", help="show applications and action items").set_defaults(fn=lambda a: cmd_report(a))
     d = sub.add_parser("draft", help="draft a reply (saved to Gmail Drafts, never sent)")
@@ -181,7 +195,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
     try:
         args.fn(args)
-    except (ModelError, FileNotFoundError) as e:
+    except (ModelError, FileNotFoundError, SignInRequired) as e:
         sys.exit(f"Error: {e}")
 
 

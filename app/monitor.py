@@ -56,6 +56,7 @@ class Monitor:
         self.task = command
         self.started = time.time()
         self.email: Email | None = None
+        self.error: str | None = None
         self._root = None
         self._ctx = None
         self.totals = {"emails": 0, "rule": 0, "model": 0, "failed": 0, "model_calls": 0, "call_errors": 0}
@@ -161,9 +162,13 @@ class Monitor:
             "langfuse.trace.tags": [TRACE_NAME, self.task],
         }
 
+    def set_total(self, total: int) -> None:
+        """How many items this run will process, so a dashboard can show live progress."""
+        self._write({"event": "run_progress", "total": total})
+
     def finish(self) -> None:
-        self._write({"event": "run_end", "command": self.command,
-                     "duration_s": round(time.time() - self.started, 1), **self.totals})
+        self._write({"event": "run_end", "command": self.command, "ok": self.error is None,
+                     "error": self.error, "duration_s": round(time.time() - self.started, 1), **self.totals})
 
 
 def _percentile(values: list[float], pct: float) -> float:

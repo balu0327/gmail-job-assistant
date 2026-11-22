@@ -18,6 +18,10 @@ SCOPES = [
 ]
 
 
+class SignInRequired(Exception):
+    """Raised in unattended runs when Gmail needs the user to sign in again in a browser."""
+
+
 @dataclass
 class Email:
     id: str
@@ -105,8 +109,12 @@ class GmailClient:
         self.svc = service
 
     @classmethod
-    def connect(cls, credentials_path: Path, token_path: Path) -> "GmailClient":
-        """Sign in once in the browser; later runs reuse token.json."""
+    def connect(cls, credentials_path: Path, token_path: Path, interactive: bool = True) -> "GmailClient":
+        """Sign in once in the browser; later runs reuse token.json.
+
+        With interactive=False (scheduled runs) it never opens a browser: if the saved
+        sign-in can't be refreshed it raises SignInRequired instead of waiting forever.
+        """
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
         from google_auth_oauthlib.flow import InstalledAppFlow
@@ -122,6 +130,10 @@ class GmailClient:
                 except Exception:
                     creds = None  # e.g. a Testing-mode token older than 7 days: sign in again
             if not creds or not creds.valid:
+                if not interactive:
+                    raise SignInRequired(
+                        "Gmail sign-in has expired. Run `python -m app.cli auth` once to sign in again."
+                    )
                 if not credentials_path.exists():
                     raise FileNotFoundError(
                         f"{credentials_path.name} not found. Follow 'Google sign-in setup' in README.md."

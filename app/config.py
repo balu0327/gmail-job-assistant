@@ -18,6 +18,7 @@ CREDENTIALS = _path("GOOGLE_CREDENTIALS", "credentials.json")
 TOKEN = _path("GOOGLE_TOKEN", "token.json")
 PROFILE = _path("PROFILE", "profile.json")
 RUN_LOG = _path("RUN_LOG", "logs/runs.jsonl")
+STATUS_FILE = _path("STATUS_FILE", "status/status.json")
 
 
 def langfuse_send_content() -> bool:

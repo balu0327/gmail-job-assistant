@@ -185,3 +185,33 @@ def test_client_creates_draft_and_cannot_send():
     assert client.create_draft(make_email(), "Hello") == "d1"
     assert len(svc.created) == 1
     assert not any("send" in name.lower() for name in dir(GmailClient))
+
+
+# ---------- dashboard status and unattended runs ----------
+
+def test_status_snapshot_for_dashboard(tmp_path):
+    import json as _json
+    from app.status import build_status, write_status
+
+    t = Tracker()
+    t.record(make_email(id="a", thread_id="th1"), result("interview", action=True))
+    t.record(make_email(id="b"), result("job_alert", company=None))
+    s = build_status(t)
+    assert s["state"] == "ok" and s["attention"] == 1
+    metrics = {m["label"]: m["value"] for m in s["metrics"]}
+    assert metrics["Applications"] == 1 and metrics["Tests & interviews"] == 1 and metrics["Emails sorted"] == 2
+    action = s["sections"][0]["items"][0]
+    assert action["badge"] == "Interview" and action["link"].endswith("/th1") and "draft a" in action["hint"]
+    assert len(s["sections"][2]["rows"]) == 1  # alerts are left out of "Recent job mail"
+    path = tmp_path / "status" / "status.json"
+    write_status(path, t, error="SignInRequired: expired")
+    saved = _json.loads(path.read_text(encoding="utf-8"))
+    assert saved["state"] == "error" and "expired" in saved["message"]
+
+
+def test_unattended_connect_never_opens_a_browser(tmp_path):
+    import pytest as _pytest
+    from app.gmail_client import SignInRequired
+
+    with _pytest.raises(SignInRequired):
+        GmailClient.connect(tmp_path / "credentials.json", tmp_path / "token.json", interactive=False)

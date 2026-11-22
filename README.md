@@ -68,6 +68,29 @@ In Testing mode Google expires the sign-in after 7 days; when that happens the n
     .venv\Scripts\python -m app.cli done EMAIL_ID      # clear an action item
     .venv\Scripts\python -m app.cli stats              # monitoring: runs, latency, failures, tokens
 
+## Every morning, automatically
+
+`scripts/scheduled_sync.py` is the unattended entry point: it syncs the last 7 days
+(already-sorted mail is skipped, so days the PC was off are covered), never opens a
+browser, and appends its output to `logs/scheduled.log`. To run it daily at 8:00 AM with
+Windows Task Scheduler (from PowerShell in this folder):
+
+    $action   = New-ScheduledTaskAction -Execute "$PWD\.venv\Scripts\pythonw.exe" -Argument "`"$PWD\scripts\scheduled_sync.py`"" -WorkingDirectory $PWD
+    $trigger  = New-ScheduledTaskTrigger -Daily -At 8:00AM
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    Register-ScheduledTask -TaskName "Gmail Job Assistant - morning sync" -Action $action -Trigger $trigger -Settings $settings
+
+`-StartWhenAvailable` means a missed 8:00 run happens as soon as the PC is back on.
+If the Google sign-in has expired, the run fails with a clear message (shown on the
+dashboard) instead of waiting for a browser; run `python -m app.cli auth` to fix it.
+
+## Dashboard
+
+After every sync (and `done`) the assistant writes `status/status.json`: headline
+numbers, action items with Gmail links, the application table and recent job mail.
+Together with `logs/runs.jsonl` this is all the [Agent Hub](../agent-hub) dashboard
+needs to show this agent live, including progress while a sync is running.
+
 ## Monitoring
 
 Every `sync` and `draft` run is logged to `logs/runs.jsonl`: one line per model call,
