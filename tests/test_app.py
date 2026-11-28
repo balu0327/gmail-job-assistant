@@ -215,3 +215,14 @@ def test_unattended_connect_never_opens_a_browser(tmp_path):
 
     with _pytest.raises(SignInRequired):
         GmailClient.connect(tmp_path / "credentials.json", tmp_path / "token.json", interactive=False)
+
+
+def test_action_items_show_when_sent_and_can_be_cleared():
+    from app.status import build_status
+
+    t = Tracker()
+    t.record(make_email(id="x1", date="Sat, 28 Nov 2026 10:46:00 +0530"), result("offer", action=True))
+    item = build_status(t)["sections"][0]["items"][0]
+    assert item["id"] == "x1" and item["clearable"] is True
+    assert "sent Sat 28 Nov" in item["subtitle"]
+    assert t.mark_handled("x1") and build_status(t)["sections"][0]["items"] == []

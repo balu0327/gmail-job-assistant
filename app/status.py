@@ -21,6 +21,27 @@ def _gmail_link(thread_id: str) -> str:
     return f"https://mail.google.com/mail/u/0/#all/{thread_id}" if thread_id else ""
 
 
+def _sent(received: str | None) -> str:
+    """When the email was sent, in local time: 'sent Sun 22 Nov, 6:54 pm'."""
+    try:
+        t = datetime.fromisoformat(received).astimezone()
+    except (TypeError, ValueError):
+        return ""
+    return f"sent {t:%a} {t.day} {t:%b}, {t.hour % 12 or 12}:{t:%M} {'am' if t.hour < 12 else 'pm'}"
+
+
+def _due(deadline: str | None) -> str:
+    try:
+        d = datetime.fromisoformat(deadline)
+    except (TypeError, ValueError):
+        return f"due {deadline}" if deadline else ""
+    return f"due {d:%a} {d.day} {d:%b}"
+
+
+def _subtitle(p) -> str:
+    return " · ".join(x for x in (p["sender"], _sent(p["received"]), _due(p["deadline"])) if x)
+
+
 def build_status(tracker: Tracker, error: str | None = None) -> dict:
     apps = tracker.applications()
     pending = tracker.pending()
@@ -52,8 +73,10 @@ def build_status(tracker: Tracker, error: str | None = None) -> dict:
                 "focus": True,  # dashboards show these items first
                 "empty": "Nothing needs you right now.",
                 "items": [{
+                    "id": p["id"],          # dashboards can clear an item by id ("done" command)
+                    "clearable": True,
                     "title": p["summary"] or p["subject"],
-                    "subtitle": f"{p['sender']}" + (f" · due {p['deadline']}" if p["deadline"] else ""),
+                    "subtitle": _subtitle(p),
                     "badge": LABELS.get(p["category"], p["category"]),
                     "tone": TONES.get(p["category"], "warn"),
                     "link": _gmail_link(p["thread_id"]),
